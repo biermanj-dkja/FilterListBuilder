@@ -2,6 +2,13 @@
 
 > **Version renumbering notice (2026-07-07):** The project previously versioned against design-document revisions (v5.x), which overstated the maturity of the code. Versions were reset one time to reflect the codebase: v5.0 → v0.2.0 and v5.1 → v0.3.0. The entries below were renumbered as part of this reset; their content is unchanged. This is a documented one-time exception to the "never edit a past entry" rule.
 
+## v0.4.1 — 2026-07-07
+
+### Changed
+- Modern layout polish pass (cosmetic only, no behaviour changes): secondary actions (CSV/blocklist/folder pickers, Stop) are now neutral outline buttons; Start is the single accent-filled action, replacing the classic green/red pair; input fields and the ad-list selector (now a bordered read-only combobox) gained hairline borders; the selected mode segment is a light accent pill with dark text, fixing near-invisible unselected labels; corner radii and accent colours unified via new `UI_*` constants. Verified by screenshot in both light and dark appearance modes. Classic layout untouched. See design doc §5 — Visual style.
+
+---
+
 ## v0.4.0 — 2026-07-07
 
 ### Added

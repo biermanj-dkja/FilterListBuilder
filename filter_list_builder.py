@@ -64,6 +64,17 @@ FORMAT_NOTES = {
     "Blocksi":    "Best-effort format — pending vendor verification.",
 }
 
+# Modern UI palette — (light mode, dark mode) tuples. One accent colour for
+# the primary action and selection states; everything else stays neutral.
+UI_ACCENT        = ("#3B6FD4", "#4A7BD9")
+UI_ACCENT_HOVER  = ("#3260BA", "#3F6CC4")
+UI_ACCENT_TEXT   = ("#2B5CB8", "#8AB4F8")
+UI_OUTLINE       = ("gray72", "gray35")
+UI_OUTLINE_HOVER = ("gray88", "gray26")
+UI_TEXT          = ("gray15", "gray90")
+UI_FIELD_BG      = ("white", "gray20")
+UI_RADIUS        = 8
+
 
 @dataclass
 class SessionConfig:
@@ -264,6 +275,12 @@ class FilterListBuilderApp(ctk.CTk):
                            text_color="gray", font=ctk.CTkFont(size=10, weight="bold"))
         lbl.pack(anchor="w", padx=14, pady=(10, 4))
 
+    def _outline_button(self, parent, **kwargs):
+        """Neutral outline-style button used for secondary actions (modern UI)."""
+        return ctk.CTkButton(parent, fg_color="transparent", hover_color=UI_OUTLINE_HOVER,
+                             border_width=1, border_color=UI_OUTLINE,
+                             text_color=UI_TEXT, corner_radius=UI_RADIUS, **kwargs)
+
     def setup_ui_modern(self):
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
@@ -273,6 +290,7 @@ class FilterListBuilderApp(ctk.CTk):
         self.header_frame = ctk.CTkFrame(self, corner_radius=0)
         self.header_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
         ctk.CTkLabel(self.header_frame, text="Filter List Builder",
+                     text_color=("gray10", "gray92"),
                      font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=16, pady=8)
         self.status_label = ctk.CTkLabel(self.header_frame, text="●  Idle",
                                          text_color="gray", font=ctk.CTkFont(size=12))
@@ -286,7 +304,7 @@ class FilterListBuilderApp(ctk.CTk):
         self.left_container.grid_rowconfigure(0, weight=1)
         self.left_container.grid_columnconfigure(0, weight=1)
 
-        self.controls_frame = ctk.CTkScrollableFrame(self.left_container, width=300)
+        self.controls_frame = ctk.CTkScrollableFrame(self.left_container, width=300, corner_radius=12)
         self.controls_frame.grid(row=0, column=0, sticky="nsew")
 
         # --- Session ---
@@ -294,36 +312,47 @@ class FilterListBuilderApp(ctk.CTk):
         self.mode_var = ctk.StringVar(value="Manual Mode")
         self.mode_selector = ctk.CTkSegmentedButton(
             self.controls_frame, values=["Manual Mode", "Batch Mode", "Scraper Mode"],
-            variable=self.mode_var, command=self.toggle_mode)
+            variable=self.mode_var, command=self.toggle_mode,
+            corner_radius=UI_RADIUS, text_color=UI_TEXT,
+            fg_color=("gray88", "gray25"),
+            selected_color=("#C5D7F5", "#31517F"), selected_hover_color=("#B3CBF1", "#3A5D92"),
+            unselected_color=("gray88", "gray25"), unselected_hover_color=("gray80", "gray30"))
         self.mode_selector.pack(padx=14, fill="x")
 
         self.dynamic_frame = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
         self.dynamic_frame.pack(pady=(8, 0), padx=14, fill="x")
 
-        self.url_entry = ctk.CTkEntry(self.dynamic_frame, placeholder_text="https://example.com")
+        self.url_entry = ctk.CTkEntry(self.dynamic_frame, placeholder_text="https://example.com",
+                                      corner_radius=UI_RADIUS, border_width=1,
+                                      border_color=UI_OUTLINE, fg_color=UI_FIELD_BG)
         self.manual_hint_label = ctk.CTkLabel(
             self.dynamic_frame, text="A visible browser opens — browse the site, then stop and save.",
             text_color="gray", font=("Arial", 10), wraplength=250, justify="left")
         self.url_entry.pack(fill="x", pady=(0, 2))
         self.manual_hint_label.pack(anchor="w")
 
-        self.batch_btn = ctk.CTkButton(self.dynamic_frame, text="Choose URL list CSV", command=self.select_batch_csv)
+        self.batch_btn = self._outline_button(self.dynamic_frame, text="Choose URL list CSV",
+                                              command=self.select_batch_csv)
         self.batch_label = ctk.CTkLabel(self.dynamic_frame, text="No CSV selected", text_color="gray", font=("Arial", 10))
         self.batch_hint_label = ctk.CTkLabel(
             self.dynamic_frame, text="Each URL is loaded headlessly with a 3-second settle per page.",
             text_color="gray", font=("Arial", 10), wraplength=250, justify="left")
 
-        self.scraper_url_entry = ctk.CTkEntry(self.dynamic_frame, placeholder_text="https://example.com/links")
+        self.scraper_url_entry = ctk.CTkEntry(self.dynamic_frame, placeholder_text="https://example.com/links",
+                                              corner_radius=UI_RADIUS, border_width=1,
+                                              border_color=UI_OUTLINE, fg_color=UI_FIELD_BG)
         self.scraper_filter_var = ctk.BooleanVar(value=False)
         self.scraper_filter_switch = ctk.CTkSwitch(self.dynamic_frame, text="Filter ad and tracking domains",
-                                                   variable=self.scraper_filter_var)
+                                                   variable=self.scraper_filter_var,
+                                                   progress_color=UI_ACCENT)
 
         # --- Domain handling ---
         self._section_header("Domain handling")
         self.wildcard_var = ctk.BooleanVar(value=True)
         self.wildcard_switch = ctk.CTkSwitch(self.controls_frame,
                                              text="Allow all subdomains of captured roots",
-                                             variable=self.wildcard_var)
+                                             variable=self.wildcard_var,
+                                             progress_color=UI_ACCENT)
         self.wildcard_switch.pack(padx=14, anchor="w")
 
         self.wildcard_text_frame = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
@@ -337,16 +366,19 @@ class FilterListBuilderApp(ctk.CTk):
         self.wildcard_info_label = ctk.CTkLabel(
             self.wildcard_text_frame,
             text="Disabled — this product matches subdomains automatically.",
-            text_color=("#1F6AA5", "#6FB1E8"), font=("Arial", 10), wraplength=260, justify="left")
+            text_color=UI_ACCENT_TEXT, font=("Arial", 10), wraplength=260, justify="left")
         self._wc_info_pack = dict(padx=14, anchor="w", pady=(2, 0))
 
         # --- Filtering ---
         self._section_header("Filtering")
         self.adlist_var = ctk.StringVar(value="Cloud Blocklist (Ads/Tracking)")
-        self.adlist_dropdown = ctk.CTkOptionMenu(
+        self.adlist_dropdown = ctk.CTkComboBox(
             self.controls_frame,
             values=["Cloud Blocklist (Ads/Tracking)", "Local File", "None"],
-            variable=self.adlist_var, command=self.on_adlist_change)
+            variable=self.adlist_var, command=self.on_adlist_change,
+            state="readonly", corner_radius=UI_RADIUS, border_width=1,
+            border_color=UI_OUTLINE, fg_color=UI_FIELD_BG, text_color=UI_TEXT,
+            button_color=("gray82", "gray30"), button_hover_color=("gray72", "gray35"))
         self.adlist_dropdown.pack(padx=14, fill="x")
         self.cache_status_label = ctk.CTkLabel(self.controls_frame, text="",
                                                text_color="gray", font=("Arial", 10),
@@ -354,8 +386,9 @@ class FilterListBuilderApp(ctk.CTk):
         self.cache_status_label.pack(padx=14, anchor="w", pady=(2, 0))
 
         self.local_blocklist_frame = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
-        self.local_blocklist_btn = ctk.CTkButton(self.local_blocklist_frame, text="Choose blocklist file",
-                                                 command=self.select_local_blocklist)
+        self.local_blocklist_btn = self._outline_button(self.local_blocklist_frame,
+                                                        text="Choose blocklist file",
+                                                        command=self.select_local_blocklist)
         self.local_blocklist_btn.pack(fill="x", pady=(4, 2))
         self.local_blocklist_label = ctk.CTkLabel(self.local_blocklist_frame, text="No file selected",
                                                   text_color="gray", font=("Arial", 10))
@@ -378,7 +411,8 @@ class FilterListBuilderApp(ctk.CTk):
         self.format_buttons = {}
         for i, (label, value) in enumerate(formats):
             btn = ctk.CTkButton(self.format_grid, text=label, height=28,
-                                fg_color="transparent", hover_color=("gray90", "gray25"),
+                                corner_radius=UI_RADIUS,
+                                fg_color="transparent", hover_color=UI_OUTLINE_HOVER,
                                 command=lambda v=value: self._select_format(v))
             btn.grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=2)
             self.format_buttons[value] = btn
@@ -390,8 +424,8 @@ class FilterListBuilderApp(ctk.CTk):
 
         # --- Output ---
         self._section_header("Output")
-        self.output_btn = ctk.CTkButton(self.controls_frame, text="Choose output folder",
-                                        command=self.select_output_folder)
+        self.output_btn = self._outline_button(self.controls_frame, text="Choose output folder",
+                                               command=self.select_output_folder)
         self.output_btn.pack(padx=14, fill="x")
         self.output_label = ctk.CTkLabel(self.controls_frame, text=self.output_folder,
                                          text_color="gray", font=("Arial", 10),
@@ -402,15 +436,17 @@ class FilterListBuilderApp(ctk.CTk):
         btn_frame = ctk.CTkFrame(self.left_container, fg_color="transparent")
         btn_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         btn_frame.grid_columnconfigure((0, 1), weight=1, uniform="ss")
-        self.start_btn = ctk.CTkButton(btn_frame, text="Start session", fg_color="green",
-                                       hover_color="darkgreen", command=self.start_session)
+        self.start_btn = ctk.CTkButton(btn_frame, text="Start session", height=34,
+                                       corner_radius=UI_RADIUS,
+                                       fg_color=UI_ACCENT, hover_color=UI_ACCENT_HOVER,
+                                       command=self.start_session)
         self.start_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.stop_btn = ctk.CTkButton(btn_frame, text="Stop and save", fg_color="red",
-                                      hover_color="darkred", state="disabled", command=self.stop_session)
+        self.stop_btn = self._outline_button(btn_frame, text="Stop and save", height=34,
+                                             state="disabled", command=self.stop_session)
         self.stop_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         # ================= RIGHT PANEL (Network Log + status bar) =================
-        self.log_frame = ctk.CTkFrame(self)
+        self.log_frame = ctk.CTkFrame(self, corner_radius=12)
         self.log_frame.grid(row=1, column=1, padx=(5, 10), pady=10, sticky="nsew")
         self.log_frame.grid_rowconfigure(0, weight=1)
         self.log_frame.grid_columnconfigure(0, weight=1)
@@ -478,12 +514,12 @@ class FilterListBuilderApp(ctk.CTk):
         selected = self.export_format_var.get()
         for value, btn in self.format_buttons.items():
             if value == selected:
-                btn.configure(border_width=2, border_color=("#1F6AA5", "#6FB1E8"),
-                              text_color=("#1F6AA5", "#6FB1E8"),
+                btn.configure(border_width=2, border_color=UI_ACCENT,
+                              text_color=UI_ACCENT_TEXT,
                               font=ctk.CTkFont(size=12, weight="bold"))
             else:
-                btn.configure(border_width=1, border_color=("gray70", "gray35"),
-                              text_color=("gray20", "gray85"),
+                btn.configure(border_width=1, border_color=UI_OUTLINE,
+                              text_color=UI_TEXT,
                               font=ctk.CTkFont(size=12))
 
     def _update_cache_status(self):

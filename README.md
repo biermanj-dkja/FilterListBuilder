@@ -1,6 +1,6 @@
 # Filter List Builder
 
-**v0.4.0**
+**v0.4.1**
 
 A desktop utility that captures every domain a website contacts during a browsing session — including CDNs, authentication providers, iframes, and service workers — filters out known ad and tracking domains, and exports a clean CSV formatted for direct import into school content filtering products.
 

@@ -1,4 +1,4 @@
-# Design Document: Filter List Builder (v0.4.0)
+# Design Document: Filter List Builder (v0.4.1)
 
 ---
 
@@ -186,6 +186,8 @@ Both layouts create the same widget and variable names, so all shared handlers (
 
 ### Modern Layout
 
+**Visual style (v0.4.1).** The modern layout uses a restrained palette defined in the `UI_*` constants at the top of the source file: neutral outline-style secondary controls (CSV/blocklist/folder pickers, Stop), bordered input fields, and a single accent colour reserved for the primary action (Start), the selected mode segment, the selected export-format button, and the auto-subdomain info label. The selected mode segment is a light accent pill with dark text so unselected labels stay readable. All colours are (light mode, dark mode) tuples verified in both appearance modes; corner radius is unified via `UI_RADIUS`. The ad-list selector is a bordered read-only `CTkComboBox`. The classic layout keeps its original stock colours.
+
 **Header bar** — application name on the left; a status indicator on the right showing `● Idle` (grey) or `● Recording` (green), updated at session start and end.
 
 **Left panel — Configuration.** A `CTkScrollableFrame` divided into labelled sections separated by hairlines, with a pinned button row *below* the scroll area so Start/Stop remain reachable at any scroll position or window size.
@@ -282,6 +284,7 @@ requests        # Fetching and caching the cloud blocklist
 | `--classic` flag preserving the v0.3.x layout | Verified — implemented; removal candidate after modern layout is stable for one minor version |
 | Blocked-domain log lines and session counters (captured/blocked/warnings) | Verified — implemented, modern layout only |
 | Wildcard hint/info label holder frame (labels no longer re-pack at panel bottom) | Verified — implemented in both layouts |
+| Modern layout polish pass (outline controls, unified accent palette, light/dark verified) | Verified — implemented in v0.4.1 |
 | Classic layout removal | Planned — after one stable minor version on the modern layout |
 | Batch CSV button relabelled from "Credentials CSV" to "URL List CSV" | Verified — implemented |
 | Securly / Blocksi labelled experimental in UI | Verified — implemented |
