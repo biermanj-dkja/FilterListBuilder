@@ -10,7 +10,7 @@ A desktop utility that captures every domain a website contacts during a browsin
 - **Batch Mode** — headless, reads a CSV of URLs and processes each one automatically
 - **Scraper Mode** — extracts all href links from a single page and saves a `Domain + Link` CSV
 - **Blocklist filtering** — uses the [StevenBlack hosts list](https://github.com/StevenBlack/hosts) to strip ad and tracker domains; cached locally for 4 hours
-- **Wildcard toggle** — output `*.google.com` or exact subdomains depending on your target product
+- **Wildcard toggle** — output `*.google.com` or exact subdomains depending on your target product; shared infrastructure domains (e.g. `cloudfront.net`, `amazonaws.com`) are never wildcarded regardless of toggle state
 - **Product-specific export formats** — GoGuardian, Deledao, Lightspeed, Securly, Blocksi, and Standard
 - **Timestamped output files** — saved to `~/Downloads` by default, folder is configurable
 
@@ -91,7 +91,7 @@ The GUI will open. No additional arguments are required.
    https://example.com
    https://another.com
    ```
-2. Select **Batch Mode**, then click **Select Credentials CSV**
+2. Select **Batch Mode**, then click **Select URL List CSV**
 3. Click **Start Session** — the tool processes each URL headlessly and waits 3 seconds per page for background traffic
 
 ### Scraper Mode
@@ -108,11 +108,13 @@ The GUI will open. No additional arguments are required.
 | Product | Notes |
 |---|---|
 | **Standard** | Two columns: `Domain`, `Source`. General purpose. |
-| **GoGuardian** | `action` + `url` columns. Max 10,000 rows. |
+| **GoGuardian** | `action` + `url` columns. Max 10,000 rows, 255 chars per URL, 3 MB file. |
 | **Deledao** | No header. Single domain column. Wildcard mode auto-disabled (Deledao matches subdomains automatically). |
 | **Lightspeed** | No header. Single domain column. Max 500 rows. Wildcard mode auto-disabled. |
-| **Securly** | No header. Single domain column. |
-| **Blocksi** | No header. Single domain column. |
+| **Securly** *(experimental)* | No header. Single domain column. Format is best-effort until vendor-confirmed. |
+| **Blocksi** *(experimental)* | No header. Single domain column. Format is best-effort until vendor-confirmed. |
+
+> **Note:** This tool suggests allowlist candidates. It cannot guarantee that every captured domain is required or safe to allow. Wildcard mode can produce overly broad rules for shared infrastructure domains — the tool automatically suppresses wildcards for known shared platforms and logs a warning.
 
 ---
 

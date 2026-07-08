@@ -1,4 +1,4 @@
-# Design Document: Dynamic Whitelist Generator (v5.0)
+# Design Document: Dynamic Whitelist Generator (v5.1)
 
 ---
 
@@ -24,6 +24,7 @@ The tool supports two operational modes: a **Manual Mode** for interactive brows
 - **Wildcard toggle:**
   - ON (default): Transform `api.services.google.com` → `*.google.com`
   - OFF (strict): Preserve the exact subdomain: `api.services.google.com`
+- **Shared infrastructure guardrail:** When wildcard mode is ON, certain root domains are excluded from wildcarding because they are shared hosting platforms used by many unrelated parties. For these domains, the exact captured hostname is preserved and a warning is logged. The current guardrail list is defined in `SHARED_INFRASTRUCTURE_DOMAINS` in the source code and includes: `amazonaws.com`, `cloudfront.net`, `azureedge.net`, `appspot.com`, `herokuapp.com`, `github.io`, `netlify.app`, `vercel.app`, `firebaseapp.com`, `googleusercontent.com`, `blob.core.windows.net`, `storage.googleapis.com`, `ondigitalocean.app`, `pages.dev`. A future option to let users choose between automatic downgrade (current behaviour) and a warning-only mode is tracked in §8.
 - **Deduplication:** Maintain a running set of unique final-form domains to prevent repeats in the export.
 - **Blocklist matching:** Before deduplicating, check the captured hostname and all of its subdomain variants against the blocklist. For example, for `ad.tracker.google.com`, check `ad.tracker.google.com`, `tracker.google.com`, and `google.com`. If any variant matches, discard the domain entirely.
 
@@ -33,6 +34,7 @@ The tool supports two operational modes: a **Manual Mode** for interactive brows
 - **Local file option:** User can supply a local `.txt` file in Hosts format, EasyList/AdGuard format, or plain-domain-per-line format.
 - **No filtering option:** User can disable the blocklist entirely.
 - **Caching:** The downloaded blocklist is cached locally and reused for 4 hours before a fresh download is triggered. The cache is stored at `~/.cache/network-whitelister/blocklist_cache.txt` (cross-platform, stable, writable).
+- **Download hardening:** The download call uses `raise_for_status()` and validates that the response looks like a hosts file before accepting it. The cache file is written atomically (temp file + rename) so a partial download never corrupts the cache. If a download fails but an older cache exists, the older cache is used with a warning. If no cache exists, filtering is disabled for the session with a warning.
 - **Parsing:** The parser handles three formats robustly:
   1. Hosts file format: `0.0.0.0 domain.com` or `127.0.0.1 domain.com`
   2. EasyList / AdGuard format: `||domain.com^`
@@ -97,8 +99,8 @@ The user selects one target product per session. The output CSV is formatted to 
 |---|---|---|---|
 | **Standard** | `Domain`, `Source` | `domain`, `resource_type` | General-purpose. Includes resource type in second column. |
 | **GoGuardian** | `action`, `url` | `action` = `allow`, `url` = domain | Verified format. Domain written as captured (no `http://` prefix needed). Max 10,000 rules, 3 MB file, 255 chars per URL. Wildcard rules are supported under `url`. Optional third column `type` for YouTube video entries — not used by this tool. |
-| **Securly** | *(pending verification)* | *(pending)* | Format not yet confirmed — needs vendor docs or sample file. |
-| **Blocksi** | *(pending verification)* | *(pending)* | Format not yet confirmed — needs vendor docs or sample file. |
+| **Securly** *(experimental)* | *(pending verification)* | *(pending)* | Format not yet confirmed — needs vendor docs or sample file. Labelled experimental in UI. |
+| **Blocksi** *(experimental)* | *(pending verification)* | *(pending)* | Format not yet confirmed — needs vendor docs or sample file. Labelled experimental in UI. |
 | **Lightspeed** | None | Single domain column | Verified format. No header row. One URL per row. Maximum 500 rows — tool will warn and truncate if exceeded. Auto-matches all subdomains, so wildcard mode is forced OFF when selected (same behaviour as Deledao). |
 | **Deledao** | None | Single domain column | Verified format. No header row. One domain per line. Wildcard mode is forced OFF when Deledao is selected — Deledao auto-matches all subdomains, making wildcards unnecessary. |
 
@@ -154,18 +156,20 @@ cdn.cloudfront.net
 
 ### Lightspeed Format Detail
 
-Lightspeed's Custom Allow List import uses the simplest format of all confirmed products:
+Lightspeed's Custom Allow List import accepts one domain per row with no header. Because Lightspeed auto-matches all subdomains, wildcard mode is forced OFF when this product is selected — exact subdomains are written as captured.
+
+Example output:
 
 ```
-*.google.com
-*.googleapis.com
-*.gstatic.com
+videos.example.com
+api.googleapis.com
+cdn.cloudfront.net
 ```
 
 Key constraints to enforce at export time:
 - Maximum **500 rows** — the tightest limit of any supported product. Tool warns and truncates if exceeded.
 - No header row.
-- Single URL column.
+- Single domain column.
 - **Wildcard mode is forced OFF** when Lightspeed is selected, identical to Deledao behaviour. The previous wildcard state is stored and restored when the user switches to another product. The UI toggle is greyed out with the label: *"Disabled — this product matches subdomains automatically."*
 - No special domain transformation required — exact subdomains are written as captured.
 
@@ -185,7 +189,7 @@ The left panel is a `CTkScrollableFrame` to ensure all controls remain accessibl
 | URL entry *(Manual only)* | Text entry | Starting URL for the browser session |
 | URL entry *(Scraper only)* | Text entry | URL of the page to scrape for links |
 | Filter toggle *(Scraper only)* | Toggle | Enables blocklist filtering on scraped links (off by default) |
-| CSV picker *(Batch only)* | File button + label | Selects `credentials.csv` containing a `url` column |
+| CSV picker *(Batch only)* | File button + label | Selects a URL list CSV containing a `url` column |
 | Wildcard switch | Toggle | Enables/disables wildcard domain formatting |
 | Blocklist source | Dropdown | `Cloud Blocklist (Ads/Tracking)` / `Local File` / `None` |
 | Local file picker *(Local only)* | File button + label | Appears only when "Local File" is selected; resolved on the main thread before session starts |
@@ -205,10 +209,15 @@ Sample log output:
 [System] Loaded 142,831 ad/tracking domains into filter.
 [System] Navigating to https://example.com
 [Captured] *.example.com  <--  (document)
-[Captured] *.cloudfront.net  <--  (script)
+[Warning] Wildcard suppressed for shared infrastructure domain 'cloudfront.net' — using exact host 'xyz.cloudfront.net' instead.
+[Captured] xyz.cloudfront.net  <--  (script)
 [Captured] *.googleapis.com  <--  (xhr)
-
-[Success] Saved 47 domains to whitelist_Securly_270325-1430.csv
+────────────────────────────────────────
+  File:     whitelist_Securly_270325-1430.csv
+  Location: /Users/name/Downloads
+  Domains captured: 47
+  Rows exported:    47
+────────────────────────────────────────
 === SESSION ENDED ===
 ```
 
@@ -219,8 +228,9 @@ Sample log output:
 The GUI must remain responsive at all times. All Playwright operations run in a daemon thread. The following rules apply:
 
 - **GUI updates from background threads are forbidden.** All widget `.configure()` calls, log writes, and session cleanup must execute on the main thread via the queue or `self.after()`.
+- **All session settings are snapshotted before the thread starts.** `build_session_config()` is called on the main thread and produces a `SessionConfig` dataclass. The backend thread receives this object and never reads from Tkinter variables or widgets directly.
 - **Shared state is protected by a lock.** `captured_domains` and `easylist_domains` are read and written under `threading.Lock()`.
-- **`filedialog` is called only from the main thread.** Local blocklist file selection happens in the UI before the session thread is started. The resolved path is passed to the thread as a plain string.
+- **`filedialog` is called only from the main thread.** Local blocklist file selection happens in the UI before the session thread is started. The resolved path is stored in `SessionConfig` and passed to the thread as a plain string.
 - **Cleanup runs exactly once.** A `_cleanup_called` flag prevents `save_and_cleanup()` from being invoked twice if the user manually closes the browser and also clicks Stop.
 - **Browser close is handled gracefully.** If the user closes the browser window during Manual Mode, the `page.wait_for_timeout()` call will throw. This is caught, `is_running` is set to False, and the session exits cleanly.
 
@@ -244,10 +254,21 @@ requests        # Fetching and caching the cloud blocklist
 | CLI interface (run core logic without GUI) | Planned — not yet implemented |
 | Batch mode login automation (auto-fill username/password) | Planned — CSV columns reserved |
 | Progress bar for batch processing | Planned |
-| Per-session domain count summary in log footer | Planned |
+| Domain review table before export (classify, select, then export) | Planned — not before v1.0; too large a UI change |
+| Scraper Mode per-page scrape trigger (scrape each visited page rather than one URL) | Planned — current Start/Stop model retained intentionally for multi-site sessions |
+| Shared infrastructure wildcard guardrail: user-configurable mode (auto-downgrade vs warn-only) | Planned — current behaviour is auto-downgrade with log warning |
 | GoGuardian export format | Verified — implemented |
+| GoGuardian 255-char per URL limit | Verified — implemented (domains over limit skipped with warning) |
+| GoGuardian 3 MB file size warning | Verified — implemented (estimated size checked after truncation) |
 | Lightspeed export format | Verified — no header, single column, 500-row limit |
-| Vendor format verification for Securly and Blocksi | Needs vendor docs or sample CSV |
-| Deledao wildcard toggle behavior | Confirmed — auto-disable on select, restore on deselect |
+| Lightspeed wildcard forced OFF | Verified — implemented; example output in §4 corrected to show exact subdomains |
+| Vendor format verification for Securly and Blocksi | Needs vendor docs or sample CSV; labelled experimental in UI |
+| Deledao wildcard toggle behavior | Verified — auto-disable on select, restore on deselect |
 | Deledao export format | Verified — no header, single domain column |
+| SessionConfig dataclass (GUI state snapshot before thread start) | Verified — implemented; no Tkinter reads from background thread |
+| Blocklist download hardening (raise_for_status, atomic write, fallback to old cache) | Verified — implemented |
+| Shared infrastructure domain guardrail (wildcard suppression) | Verified — implemented; list in SHARED_INFRASTRUCTURE_DOMAINS constant |
+| Batch CSV button relabelled from "Credentials CSV" to "URL List CSV" | Verified — implemented |
+| Securly / Blocksi labelled experimental in UI | Verified — implemented |
+| Session summary block in log footer | Verified — implemented |
 | Bark support | Removed — no bulk upload feature |
