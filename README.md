@@ -1,4 +1,6 @@
-# Network Traffic Whitelister
+# Filter List Builder
+
+**v0.3.1**
 
 A desktop utility that captures every domain a website contacts during a browsing session — including CDNs, authentication providers, iframes, and service workers — filters out known ad and tracking domains, and exports a clean CSV formatted for direct import into school content filtering products.
 
@@ -28,8 +30,8 @@ A desktop utility that captures every domain a website contacts during a browsin
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/network-whitelister.git
-cd network-whitelister
+git clone https://github.com/biermanj-dkja/FilterListBuilder.git
+cd FilterListBuilder
 ```
 
 ### 2. Create and activate a virtual environment (recommended)
@@ -65,7 +67,7 @@ This downloads a local Chromium binary (~150 MB). It is only needed once.
 ## Running the App
 
 ```bash
-python network_whitelister.py
+python filter_list_builder.py
 ```
 
 The GUI will open. No additional arguments are required.
@@ -134,7 +136,7 @@ Files are saved to `~/Downloads` by default. You can change this with the **Sele
 The StevenBlack hosts list is cached at:
 
 ```
-~/.cache/network-whitelister/blocklist_cache.txt
+~/.cache/filter-list-builder/blocklist_cache.txt
 ```
 
 It is refreshed automatically after 4 hours. To force a fresh download, delete this file.
@@ -144,8 +146,10 @@ It is refreshed automatically after 4 hours. To force a fresh download, delete t
 ## Project Structure
 
 ```
-network-whitelister/
-├── network_whitelister.py   # Main application
+FilterListBuilder/
+├── filter_list_builder.py   # Main application
+├── design_document.md        # Authoritative spec
+├── CHANGELOG.md
 ├── requirements.txt          # Python dependencies
 ├── README.md
 ├── .gitignore
