@@ -2,6 +2,23 @@
 
 > **Version renumbering notice (2026-07-07):** The project previously versioned against design-document revisions (v5.x), which overstated the maturity of the code. Versions were reset one time to reflect the codebase: v5.0 → v0.2.0 and v5.1 → v0.3.0. The entries below were renumbered as part of this reset; their content is unchanged. This is a documented one-time exception to the "never edit a past entry" rule.
 
+## v0.4.0 — 2026-07-07
+
+### Added
+- Redesigned default interface: grouped configuration sections (Session, Domain handling, Filtering, Export format, Output), a header bar with an Idle/Recording status indicator, and Start/Stop buttons pinned below the scroll area. See design doc §5 — GUI Layout.
+- Export format selector is now a 2×3 button grid with a per-product constraint note (row limits, char limits, subdomain behaviour) shown on selection, from the new `FORMAT_NOTES` constant.
+- Colour-coded network log: captured = green, warnings = amber, errors = red, blocked = dim, system = grey; degrades to plain text on older CustomTkinter versions.
+- Live status bar under the log: unique captured, blocked, and warning counts refreshed by the main-thread queue poll, plus the session target (product → folder).
+- Blocked domains are now visible: the first request to each blocked hostname logs a dimmed `[Blocked]` line (modern layout only; classic keeps silent discarding).
+- Cache status helper line under the ad-list dropdown showing blocklist cache age or local-file format hints.
+- `--classic` command-line flag preserving the previous v0.3.x layout unchanged; removal candidate after one stable minor version. See design doc §5.
+
+### Fixed
+- Wildcard hint/info labels re-packed at the bottom of the configuration panel when switching to/from Deledao or Lightspeed; they now live in a holder frame and swap in place (fixed in both layouts).
+- Switching between two auto-subdomain products (Deledao → Lightspeed) overwrote the remembered wildcard state with the forced-off value; the previous state is now only saved when the toggle is active.
+
+---
+
 ## v0.3.1 — 2026-07-07
 
 ### Changed

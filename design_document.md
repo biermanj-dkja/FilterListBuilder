@@ -1,4 +1,4 @@
-# Design Document: Filter List Builder (v0.3.1)
+# Design Document: Filter List Builder (v0.4.0)
 
 ---
 
@@ -177,43 +177,49 @@ Key constraints to enforce at export time:
 
 ## 5. GUI Layout (CustomTkinter)
 
-The UI is a modern, dark-themed desktop window divided into two panels.
+Since v0.4.0 the application ships with two layouts in the same source file:
 
-### Left Panel — Configuration (Scrollable)
+- **Modern layout (default):** grouped, sectioned configuration panel with a header status indicator, per-format constraint hints, a colour-coded log, and a live status bar.
+- **Classic layout:** the previous v0.3.x layout, preserved unchanged behind the `--classic` command-line flag. It is a removal candidate once the modern layout has been stable for one minor version (tracked in §8).
 
-The left panel is a `CTkScrollableFrame` to ensure all controls remain accessible on smaller screens or at reduced window sizes.
+Both layouts create the same widget and variable names, so all shared handlers (`toggle_mode`, `on_format_change`, `on_adlist_change`, session control, save/cleanup) run unmodified against either. Widgets that exist in only one layout (hint labels, status bar, header) are initialised to `None` and guarded with attribute checks.
 
-| Control | Type | Description |
-|---|---|---|
-| Mode selector | Segmented button | Switches between **Manual Mode**, **Batch Mode**, and **Scraper Mode** |
-| URL entry *(Manual only)* | Text entry | Starting URL for the browser session |
-| URL entry *(Scraper only)* | Text entry | URL of the page to scrape for links |
-| Filter toggle *(Scraper only)* | Toggle | Enables blocklist filtering on scraped links (off by default) |
-| CSV picker *(Batch only)* | File button + label | Selects a URL list CSV containing a `url` column |
-| Wildcard switch | Toggle | Enables/disables wildcard domain formatting |
-| Blocklist source | Dropdown | `Cloud Blocklist (Ads/Tracking)` / `Local File` / `None` |
-| Local file picker *(Local only)* | File button + label | Appears only when "Local File" is selected; resolved on the main thread before session starts |
-| Export format | Radio group | Selects target product (Standard, Securly, GoGuardian, Deledao, Blocksi, Lightspeed) |
-| Output folder | Directory button + label | Defaults to `~/Downloads`; user can override |
-| Start Session | Button (green) | Validates inputs and launches the backend thread |
-| Stop & Save | Button (red) | Signals the backend to stop and triggers CSV export |
+### Modern Layout
 
-### Right Panel — Network Log
+**Header bar** — application name on the left; a status indicator on the right showing `● Idle` (grey) or `● Recording` (green), updated at session start and end.
 
-A scrollable, read-only `CTkTextbox` displaying real-time log output from the session, including captured domains, blocked domains, system messages, and errors. Uses monospaced font for alignment.
+**Left panel — Configuration.** A `CTkScrollableFrame` divided into labelled sections separated by hairlines, with a pinned button row *below* the scroll area so Start/Stop remain reachable at any scroll position or window size.
 
-Sample log output:
+| Section | Contents |
+|---|---|
+| **Session** | Mode segmented button (Manual / Batch / Scraper); per-mode inputs with a one-line helper hint (Manual: URL entry + "a visible browser opens" hint; Batch: CSV picker + filename label + settle-time hint; Scraper: URL entry + filter toggle) |
+| **Domain handling** | Wildcard switch with a hint line explaining the transformation and the shared-host guardrail. When Deledao or Lightspeed is selected, the hint is replaced in place by an accent-coloured info line: *"Disabled — this product matches subdomains automatically."* Both labels live in a dedicated holder frame so swapping them never reorders the panel. |
+| **Filtering** | Ad-list source dropdown; a live helper line beneath it showing cache age ("Cached 1.2 h ago — reused until 4 h old"), staleness, or the accepted local-file formats; local file picker shown only for "Local File" |
+| **Export format** | 2×3 grid of selectable buttons (Standard, GoGuardian, Deledao, Lightspeed, Securly *(exp.)*, Blocksi *(exp.)*). The selected button gets an accent border; a note line beneath the grid shows that product's constraints (row limits, char limits, subdomain behaviour) from the `FORMAT_NOTES` constant. |
+| **Output** | Folder picker button + current path label (defaults to `~/Downloads`) |
+| **Pinned row** | Start session (green) and Stop and save (red), side by side, always visible |
+
+**Right panel — Network log + status bar.** The read-only monospaced `CTkTextbox` colour-codes lines by prefix using text tags: captured/scraped = green, warnings = amber, errors = red, blocked = dim grey, system = grey. Tag colours are mid-brightness values chosen to stay readable in both light and dark appearance modes; if the installed CustomTkinter lacks tag passthrough, the log degrades gracefully to plain text. Below the log, a status bar shows live counters — **Captured** (unique final-form domains), **Blocked** (unique blocked hostnames), **Warnings** — refreshed on the main thread by the 100 ms queue poll, plus the session target on the right (`GoGuardian → Downloads`).
+
+**Blocked-domain visibility (modern only):** the first request to each blocked hostname writes a dimmed `[Blocked] hostname — on blocklist` log line and increments the blocked counter. Repeat requests to the same hostname are counted once and not re-logged. The classic layout keeps the old behaviour (blocked domains silently discarded).
+
+### Classic Layout (`--classic`)
+
+The v0.3.x single-column layout: title, mode selector, dynamic mode inputs, wildcard switch + hint, ad-list dropdown, export format radio group, output picker, Start/Stop stacked at the bottom of the scrollable panel, and a plain uncoloured log on the right. Preserved for users who prefer it during the transition; one fix was applied to both layouts — the wildcard hint/info labels now live in a holder frame so swapping them on product change no longer re-packs the label at the bottom of the panel.
+
+Sample log output (modern):
 ```
 === SESSION STARTED ===
 [System] Using cached Blocklist (less than 4 hours old).
-[System] Loaded 142,831 ad/tracking domains into filter.
+[System] Loaded 142831 unique ad/tracking domains into filter.
 [System] Navigating to https://example.com
 [Captured] *.example.com  <--  (document)
 [Warning] Wildcard suppressed for shared infrastructure domain 'cloudfront.net' — using exact host 'xyz.cloudfront.net' instead.
 [Captured] xyz.cloudfront.net  <--  (script)
 [Captured] *.googleapis.com  <--  (xhr)
+[Blocked] ads.doubleclick.net — on blocklist
 ────────────────────────────────────────
-  File:     whitelist_Securly_270325-1430.csv
+  File:     whitelist_GoGuardian_070726-1430.csv
   Location: /Users/name/Downloads
   Domains captured: 47
   Rows exported:    47
@@ -272,8 +278,12 @@ requests        # Fetching and caching the cloud blocklist
 | Scraper filter + ad-list "None" combination blocked at session start | Verified — implemented |
 | Deduplicated blocklist domain count in log | Verified — implemented |
 | Bare URLs default to `https://` with exact scheme detection | Verified — implemented |
+| UI redesign (grouped sections, header status indicator, format button grid with constraint notes, coloured log, status bar) | Verified — implemented as default layout in v0.4.0 |
+| `--classic` flag preserving the v0.3.x layout | Verified — implemented; removal candidate after modern layout is stable for one minor version |
+| Blocked-domain log lines and session counters (captured/blocked/warnings) | Verified — implemented, modern layout only |
+| Wildcard hint/info label holder frame (labels no longer re-pack at panel bottom) | Verified — implemented in both layouts |
+| Classic layout removal | Planned — after one stable minor version on the modern layout |
 | Batch CSV button relabelled from "Credentials CSV" to "URL List CSV" | Verified — implemented |
 | Securly / Blocksi labelled experimental in UI | Verified — implemented |
 | Session summary block in log footer | Verified — implemented |
-| UI redesign (grouped sections, status bar, coloured log) with `--classic` flag for the current layout | Planned — mockup approved pending; ships as v0.4.0 |
 | Bark support | Removed — no bulk upload feature |

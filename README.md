@@ -1,6 +1,6 @@
 # Filter List Builder
 
-**v0.3.1**
+**v0.4.0**
 
 A desktop utility that captures every domain a website contacts during a browsing session — including CDNs, authentication providers, iframes, and service workers — filters out known ad and tracking domains, and exports a clean CSV formatted for direct import into school content filtering products.
 
@@ -15,6 +15,7 @@ A desktop utility that captures every domain a website contacts during a browsin
 - **Wildcard toggle** — output `*.google.com` or exact subdomains depending on your target product; shared infrastructure domains (e.g. `cloudfront.net`, `amazonaws.com`) are never wildcarded regardless of toggle state
 - **Product-specific export formats** — GoGuardian, Deledao, Lightspeed, Securly, Blocksi, and Standard
 - **Timestamped output files** — saved to `~/Downloads` by default, folder is configurable
+- **Redesigned interface** — grouped settings, colour-coded log, and a live session status bar; the previous layout is available with `--classic`
 
 ---
 
@@ -70,7 +71,11 @@ This downloads a local Chromium binary (~150 MB). It is only needed once.
 python filter_list_builder.py
 ```
 
-The GUI will open. No additional arguments are required.
+The GUI will open. No additional arguments are required. To use the previous (v0.3.x) interface layout instead:
+
+```bash
+python filter_list_builder.py --classic
+```
 
 ---
 
