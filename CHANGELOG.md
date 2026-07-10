@@ -2,6 +2,17 @@
 
 > **Version renumbering notice (2026-07-07):** The project previously versioned against design-document revisions (v5.x), which overstated the maturity of the code. Versions were reset one time to reflect the codebase: v5.0 → v0.2.0 and v5.1 → v0.3.0. The entries below were renumbered as part of this reset; their content is unchanged. This is a documented one-time exception to the "never edit a past entry" rule.
 
+## v0.6.0 — 2026-07-10
+
+### Added
+- **Standalone build support.** `python build.py` produces a self-contained `dist/FilterListBuilder/` folder (PyInstaller onedir) with a bundled Chromium — end users need neither Python nor a `playwright install` step. New repo files: `build.py`, `FilterListBuilder.spec`, `BUILD-INSTRUCTIONS.md`. Onedir (not onefile) and no UPX were chosen deliberately to minimise antivirus false positives and startup cost.
+- Frozen-app browser path override at the top of `filter_list_builder.py`: when running as a compiled bundle, `PLAYWRIGHT_BROWSERS_PATH` is pointed at the bundled `browsers/` folder before Playwright is imported. Guarded by `sys.frozen`, so running from source is completely unaffected.
+
+### Changed
+- `.gitignore` now excludes `pw-browsers/` (the repo-local Chromium copy downloaded by `build.py`; a build artifact, never committed).
+
+---
+
 ## v0.5.0 — 2026-07-10
 
 ### Added

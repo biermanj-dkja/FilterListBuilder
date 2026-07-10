@@ -12,6 +12,17 @@ import tempfile
 import shutil
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
+
+import sys
+
+# When running as a PyInstaller bundle, point Playwright at the Chromium copy
+# shipped inside the app folder (bundled as 'browsers/' by
+# FilterListBuilder.spec — see BUILD-INSTRUCTIONS.md). Must be set before the
+# Playwright driver starts. Running from source, sys.frozen is unset and this
+# is a no-op: the normal Playwright browser cache is used.
+if getattr(sys, "frozen", False):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(sys._MEIPASS, "browsers")
+
 from playwright.sync_api import sync_playwright
 
 ctk.set_appearance_mode("System")

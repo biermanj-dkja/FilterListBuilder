@@ -1,4 +1,4 @@
-# Design Document: Filter List Builder (v0.5.0)
+# Design Document: Filter List Builder (v0.6.0)
 
 ---
 
@@ -332,6 +332,7 @@ requests        # Fetching and caching the cloud blocklist
 | Modern layout polish pass (outline controls, unified accent palette, light/dark verified) | Verified — implemented in v0.4.1 |
 | Classic layout removal | Planned — after one stable minor version on the modern layout |
 | Batch CSV button relabelled from "Credentials CSV" to "URL List CSV" | Verified — implemented |
+| Standalone build tooling (`build.py` + PyInstaller onedir spec, bundled Chromium, frozen-app browser path override) | Verified — implemented in v0.6.0; see `BUILD-INSTRUCTIONS.md` |
 | Securly / Blocksi labelled experimental in UI | Verified — implemented |
 | Session summary block in log footer | Verified — implemented |
 | Bark support | Removed — no bulk upload feature |

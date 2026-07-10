@@ -1,6 +1,6 @@
 # Filter List Builder
 
-**v0.5.0**
+**v0.6.0**
 
 A desktop utility that captures every domain a website contacts during a browsing session — including CDNs, authentication providers, iframes, and service workers — tags each one first-party or third-party, filters out known ad and tracking domains, and exports a clean, curated CSV formatted for direct import into school content filtering products. An optional second CSV exports every raw URL requested (including blocked ones) for auditing.
 
@@ -79,6 +79,8 @@ The GUI will open. No additional arguments are required. To use the previous (v0
 ```bash
 python filter_list_builder.py --classic
 ```
+
+Maintainers building a standalone executable (no Python required on the target machine): see [`BUILD-INSTRUCTIONS.md`](BUILD-INSTRUCTIONS.md).
 
 ---
 
@@ -160,11 +162,14 @@ To force a fresh download of all three, delete these files. If one source fails 
 
 ```
 FilterListBuilder/
-├── filter_list_builder.py   # Main application
+├── filter_list_builder.py    # Main application
 ├── design_document.md        # Authoritative spec
 ├── CHANGELOG.md
 ├── requirements.txt          # Python dependencies
 ├── README.md
+├── build.py                  # One-command standalone build (see BUILD-INSTRUCTIONS.md)
+├── FilterListBuilder.spec    # PyInstaller configuration
+├── BUILD-INSTRUCTIONS.md     # How to compile a distributable build
 ├── .gitignore
 └── LICENSE
 ```
