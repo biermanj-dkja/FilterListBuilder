@@ -20,6 +20,15 @@ ctk.set_default_color_theme("blue")
 # Path for blocklist cache in a stable user-writable location
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "filter-list-builder")
 CACHE_FILE = os.path.join(CACHE_DIR, "blocklist_cache.txt")
+EASYLIST_CACHE_FILE = os.path.join(CACHE_DIR, "easylist_cache.txt")
+EASYPRIVACY_CACHE_FILE = os.path.join(CACHE_DIR, "easyprivacy_cache.txt")
+CACHE_TTL_SECONDS = 14400  # 4 hours, shared by all three blocklist sources
+
+# Default-checked heuristic thresholds for the pre-export review table (see
+# _default_include_for): a third-party domain must show up on more than one
+# page, or be requested repeatedly on one page, before it's trusted by default.
+REVIEW_DEFAULT_MIN_PAGE_COUNT = 2
+REVIEW_DEFAULT_MIN_HIT_COUNT = 5
 
 # Domains where wildcard mode is unsafe because the domain is shared
 # infrastructure used by many unrelated parties. Matching is by suffix:
@@ -52,6 +61,67 @@ def match_shared_infrastructure(hostname: str):
         if hostname == entry or hostname.endswith("." + entry):
             return entry
     return None
+
+
+def parse_blocklist_lines(lines, allow_bare_domains=True):
+    """Parses hosts-file and Adblock/EasyList-style (||domain^) rules into a
+    set of blockable domains. Skips '@@' exception rules (an unblock, never
+    a block) and cosmetic/element-hiding rules ('##', '#@#', '#?#', '#$#').
+    allow_bare_domains=False disables the "any line containing a dot is a
+    domain" fallback, which is needed for real EasyList/EasyPrivacy content —
+    those lists are mostly path/regex filters that aren't domains at all."""
+    domains = set()
+    for raw in lines:
+        line = raw.strip().lower()
+        if not line or line.startswith("#") or line.startswith("!") or line.startswith("["):
+            continue
+        if line.startswith("@@"):
+            continue
+        if "##" in line or "#@#" in line or "#?#" in line or "#$#" in line:
+            continue
+
+        domain = ""
+
+        if line.startswith("0.0.0.0 ") or line.startswith("127.0.0.1 "):
+            parts = line.split()
+            if len(parts) >= 2:
+                domain = parts[1]
+                if domain in ("0.0.0.0", "127.0.0.1", "localhost", "broadcasthost"):
+                    continue
+
+        elif line.startswith("||"):
+            rule = line.split("$")[0]
+            domain_part = rule[2:]
+            domain = re.split(r"[\^/:*?]", domain_part)[0]
+            if domain.startswith("*."):
+                domain = domain[2:]
+
+        elif allow_bare_domains and "." in line and " " not in line and not line.startswith("/"):
+            domain = line
+
+        if domain and "." in domain:
+            domains.add(domain)
+    return domains
+
+
+def resolve_page_context(request):
+    """Returns (page_url, is_top_level_nav) for a Playwright request, used
+    for first-party classification and page-count tracking. Queries
+    Playwright's live frame state at request time rather than caching a
+    "current page" separately, so there's no race between an outgoing page's
+    in-flight requests and a navigation listener. Falls back to ("", False)
+    for requests with no resolvable frame (e.g. service-worker fetches),
+    which conservatively classifies as third-party."""
+    try:
+        frame = request.frame
+        if frame is None:
+            raise ValueError("no frame")
+        main_frame = frame.page.main_frame
+        is_top_level_nav = (request.resource_type == "document" and frame == main_frame)
+        page_url = request.url if is_top_level_nav else (main_frame.url or "")
+    except Exception:
+        page_url, is_top_level_nav = "", False
+    return page_url, is_top_level_nav
 
 
 # One-line constraint summary shown under the export format selector (modern UI)
@@ -91,6 +161,30 @@ class SessionConfig:
     local_blocklist_path: str
     export_format: str
     output_folder: str
+    export_raw_urls: bool = False
+
+
+@dataclass
+class DomainRecord:
+    """Value type for self.captured_domains — one allow-listed (post
+    wildcard/exact) domain string captured this session."""
+    resource_type: str
+    base_domain: str                              # eTLD+1, needed to reconstruct *.{base_domain} if wildcarded in review
+    hit_count: int = 0
+    page_urls: set = field(default_factory=set)   # distinct top-level page URLs that triggered a hit; len() = page count
+    is_first_party: bool = False
+
+
+@dataclass
+class RequestRecord:
+    """Value type for self.raw_requests — every unique URL requested this
+    session, including blocked ones."""
+    url: str
+    hostname: str
+    resource_type: str
+    is_blocked: bool
+    is_first_party: bool
+    page_url: str
 
 
 class FilterListBuilderApp(ctk.CTk):
@@ -106,6 +200,8 @@ class FilterListBuilderApp(ctk.CTk):
         # Application State
         self.is_running = False
         self.captured_domains = {}
+        self.raw_requests = {}
+        self.root_domains = set()
         self.log_queue = queue.Queue()
         self.easylist_domains = set()
         self._domains_lock = threading.Lock()
@@ -113,7 +209,7 @@ class FilterListBuilderApp(ctk.CTk):
         self._local_blocklist_path = ""
         # Wildcard state to restore after leaving a product that auto-matches
         # subdomains (Deledao, Lightspeed)
-        self._wildcard_before_autosub = True
+        self._wildcard_before_autosub = False
         # Session counters (modern UI status bar). _blocked_domains is written
         # from the Playwright thread and must be accessed under _domains_lock.
         self._blocked_domains = set()
@@ -164,7 +260,7 @@ class FilterListBuilderApp(ctk.CTk):
         self.scraper_filter_var = ctk.BooleanVar(value=False)
         self.scraper_filter_switch = ctk.CTkSwitch(self.dynamic_frame, text="Filter ad/tracking domains", variable=self.scraper_filter_var)
 
-        self.wildcard_var = ctk.BooleanVar(value=True)
+        self.wildcard_var = ctk.BooleanVar(value=False)
         self.wildcard_switch = ctk.CTkSwitch(self.controls_frame, text="Allow all subdomains of captured root domains",
                                               variable=self.wildcard_var)
         self.wildcard_switch.pack(pady=(15, 2), padx=20, anchor="w")
@@ -245,6 +341,11 @@ class FilterListBuilderApp(ctk.CTk):
         self.output_btn.pack(pady=10, padx=20, fill="x")
         self.output_label = ctk.CTkLabel(self.controls_frame, text=self.output_folder, text_color="gray", font=("Arial", 10))
         self.output_label.pack(padx=20, fill="x")
+
+        self.export_raw_var = ctk.BooleanVar(value=False)
+        self.export_raw_checkbox = ctk.CTkCheckBox(self.controls_frame, text="Also export raw URL data (CSV)",
+                                                    variable=self.export_raw_var)
+        self.export_raw_checkbox.pack(pady=(10, 0), padx=20, anchor="w")
 
         self.start_btn = ctk.CTkButton(self.controls_frame, text="Start Session", fg_color="green",
                                         hover_color="darkgreen", command=self.start_session)
@@ -348,7 +449,7 @@ class FilterListBuilderApp(ctk.CTk):
 
         # --- Domain handling ---
         self._section_header("Domain handling")
-        self.wildcard_var = ctk.BooleanVar(value=True)
+        self.wildcard_var = ctk.BooleanVar(value=False)
         self.wildcard_switch = ctk.CTkSwitch(self.controls_frame,
                                              text="Allow all subdomains of captured roots",
                                              variable=self.wildcard_var,
@@ -431,6 +532,14 @@ class FilterListBuilderApp(ctk.CTk):
                                          text_color="gray", font=("Arial", 10),
                                          wraplength=260, justify="left")
         self.output_label.pack(padx=14, anchor="w", pady=(2, 0))
+
+        self.export_raw_var = ctk.BooleanVar(value=False)
+        self.export_raw_checkbox = ctk.CTkCheckBox(self.controls_frame, text="Also export raw URL data (CSV)",
+                                                    variable=self.export_raw_var,
+                                                    corner_radius=UI_RADIUS,
+                                                    fg_color=UI_ACCENT, hover_color=UI_ACCENT_HOVER,
+                                                    border_color=UI_OUTLINE)
+        self.export_raw_checkbox.pack(padx=14, anchor="w", pady=(6, 0))
 
         # --- Session buttons (pinned below the scroll area) ---
         btn_frame = ctk.CTkFrame(self.left_container, fg_color="transparent")
@@ -529,14 +638,16 @@ class FilterListBuilderApp(ctk.CTk):
             return
         source = self.adlist_var.get()
         if source == "Cloud Blocklist (Ads/Tracking)":
-            if os.path.exists(CACHE_FILE):
-                age_h = (time.time() - os.path.getmtime(CACHE_FILE)) / 3600
+            cache_files = [CACHE_FILE, EASYLIST_CACHE_FILE, EASYPRIVACY_CACHE_FILE]
+            existing = [f for f in cache_files if os.path.exists(f)]
+            if len(existing) == len(cache_files):
+                age_h = max(time.time() - os.path.getmtime(f) for f in existing) / 3600
                 if age_h < 4:
-                    text = f"Cached {age_h:.1f} h ago — reused until 4 h old."
+                    text = f"StevenBlack + EasyList + EasyPrivacy cached, oldest {age_h:.1f} h ago — reused until 4 h old."
                 else:
-                    text = "Cache is stale — a fresh list downloads at session start."
+                    text = "Cache is stale — fresh lists download at session start."
             else:
-                text = "Downloads at session start, then cached for 4 h."
+                text = "StevenBlack + EasyList + EasyPrivacy download at session start, then cached for 4 h."
         elif source == "Local File":
             text = "Hosts, EasyList/AdGuard, or one-domain-per-line format."
         else:
@@ -621,6 +732,12 @@ class FilterListBuilderApp(ctk.CTk):
             self.scraper_url_entry.pack(fill="x", pady=(0, 2))
             self.scraper_filter_switch.pack(anchor="w", pady=(4, 0))
 
+        # Scraper Mode never populates captured_domains/raw_requests (it has
+        # its own independent scraped_links_*.csv export), so the raw-data
+        # toggle doesn't apply there.
+        if getattr(self, "export_raw_checkbox", None) is not None:
+            self.export_raw_checkbox.configure(state="disabled" if selected_mode == "Scraper Mode" else "normal")
+
     def select_batch_csv(self):
         path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
         if path:
@@ -680,6 +797,7 @@ class FilterListBuilderApp(ctk.CTk):
             local_blocklist_path=self._local_blocklist_path,
             export_format=self.export_format_var.get(),
             output_folder=self.output_folder,
+            export_raw_urls=self.export_raw_var.get(),
         )
 
     def start_session(self):
@@ -722,6 +840,8 @@ class FilterListBuilderApp(ctk.CTk):
         with self._domains_lock:
             self.captured_domains.clear()
             self._blocked_domains.clear()
+            self.raw_requests.clear()
+            self.root_domains.clear()
         self.easylist_domains.clear()
 
         self.start_btn.configure(state="disabled")
@@ -747,60 +867,91 @@ class FilterListBuilderApp(ctk.CTk):
 
     # ── Backend (runs in daemon thread) ──────────────────────────────────────
 
+    def _fetch_cached_list(self, label, url, cache_path, sanity_token):
+        """Downloads and caches one blocklist source, 4h TTL, atomic write,
+        with graceful fallback to a stale cache (or None) on failure. Same
+        pattern used for all three cloud sources — only label/url/cache
+        path/sanity check differ."""
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        needs_download = True
+
+        if os.path.exists(cache_path):
+            file_age = time.time() - os.path.getmtime(cache_path)
+            if file_age < CACHE_TTL_SECONDS:
+                self.write_log(f"[System] Using cached {label} (less than 4 hours old).")
+                needs_download = False
+            else:
+                self.write_log(f"[System] Cached {label} is old. Updating...")
+
+        if needs_download:
+            self.write_log(f"[System] Downloading fresh {label}...")
+            try:
+                resp = requests.get(url, timeout=15)
+                resp.raise_for_status()
+
+                if sanity_token not in resp.text:
+                    raise ValueError(f"Downloaded content does not look like {label}.")
+
+                # Atomic write: write to a temp file then rename so a partial
+                # download never corrupts the cache.
+                tmp_fd, tmp_path = tempfile.mkstemp(dir=CACHE_DIR, suffix=".tmp")
+                try:
+                    with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                        f.write(resp.text)
+                    shutil.move(tmp_path, cache_path)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+
+                self.write_log(f"[System] {label} downloaded and cached.")
+
+            except Exception as e:
+                if os.path.exists(cache_path):
+                    self.write_log(f"[Warning] {label} download failed ({e}). Using older cached copy — ad filtering may be incomplete.")
+                else:
+                    self.write_log(f"[Warning] {label} download failed and no cache exists ({e}).")
+                    return None
+
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return f.readlines()
+
     def fetch_easylist(self, config: SessionConfig):
-        """Downloads / loads the blocklist. Reads only from config (no Tkinter access)."""
+        """Downloads / loads the blocklist(s). Reads only from config (no
+        Tkinter access). Cloud mode unions StevenBlack Hosts, EasyList, and
+        EasyPrivacy so ad/tracking coverage isn't limited to StevenBlack's
+        malware/ads-focused hosts file."""
         self.write_log("[System] Preparing Blocklist...")
         try:
             if config.adlist_source == "Cloud Blocklist (Ads/Tracking)":
-                os.makedirs(CACHE_DIR, exist_ok=True)
-                needs_download = True
+                sources = [
+                    ("StevenBlack Hosts", "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+                     CACHE_FILE, "0.0.0.0", True),
+                    ("EasyList", "https://easylist.to/easylist/easylist.txt",
+                     EASYLIST_CACHE_FILE, "[Adblock", False),
+                    ("EasyPrivacy", "https://easylist.to/easylist/easyprivacy.txt",
+                     EASYPRIVACY_CACHE_FILE, "[Adblock", False),
+                ]
+                combined = set()
+                any_ok = False
+                for label, url, cache_path, sanity_token, allow_bare in sources:
+                    lines = self._fetch_cached_list(label, url, cache_path, sanity_token)
+                    if lines is None:
+                        continue
+                    any_ok = True
+                    combined |= parse_blocklist_lines(lines, allow_bare_domains=allow_bare)
 
-                if os.path.exists(CACHE_FILE):
-                    file_age = time.time() - os.path.getmtime(CACHE_FILE)
-                    if file_age < 14400:
-                        self.write_log("[System] Using cached Blocklist (less than 4 hours old).")
-                        needs_download = False
-                    else:
-                        self.write_log("[System] Cached Blocklist is old. Updating...")
+                if not any_ok:
+                    self.write_log("[Warning] All blocklist sources failed and no caches exist. Ad filtering is disabled for this session.")
+                    return
 
-                if needs_download:
-                    self.write_log("[System] Downloading fresh StevenBlack Hosts list...")
-                    try:
-                        resp = requests.get(
-                            "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-                            timeout=15
-                        )
-                        resp.raise_for_status()
-
-                        # Sanity-check: a valid hosts file contains "0.0.0.0" entries
-                        if "0.0.0.0" not in resp.text:
-                            raise ValueError("Downloaded content does not look like a hosts file.")
-
-                        # Atomic write: write to a temp file then rename so a partial
-                        # download never corrupts the cache.
-                        tmp_fd, tmp_path = tempfile.mkstemp(dir=CACHE_DIR, suffix=".tmp")
-                        try:
-                            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                                f.write(resp.text)
-                            shutil.move(tmp_path, CACHE_FILE)
-                        except Exception:
-                            try:
-                                os.unlink(tmp_path)
-                            except OSError:
-                                pass
-                            raise
-
-                        self.write_log("[System] Blocklist downloaded and cached.")
-
-                    except Exception as e:
-                        if os.path.exists(CACHE_FILE):
-                            self.write_log(f"[Warning] Blocklist download failed ({e}). Using older cached copy — ad filtering may be incomplete.")
-                        else:
-                            self.write_log(f"[Warning] Blocklist download failed and no cache exists ({e}). Ad filtering is disabled for this session.")
-                            return
-
-                with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
+                with self._domains_lock:
+                    self.easylist_domains = combined
+                self.write_log(f"[System] Loaded {len(combined)} unique ad/tracking domains "
+                               f"into filter (StevenBlack + EasyList + EasyPrivacy).")
+                return
 
             elif config.adlist_source == "Local File":
                 if not config.local_blocklist_path:
@@ -808,42 +959,12 @@ class FilterListBuilderApp(ctk.CTk):
                     return
                 with open(config.local_blocklist_path, "r", encoding="utf-8") as f:
                     lines = f.readlines()
+                new_domains = parse_blocklist_lines(lines, allow_bare_domains=True)
+                with self._domains_lock:
+                    self.easylist_domains = new_domains
+                self.write_log(f"[System] Loaded {len(new_domains)} unique ad/tracking domains into filter.")
             else:
                 self.write_log("[System] Ad-list disabled.")
-                return
-
-            new_domains = set()
-            for line in lines:
-                line = line.strip().lower()
-                if not line or line.startswith("#") or line.startswith("!") or line.startswith("["):
-                    continue
-
-                domain = ""
-
-                if line.startswith("0.0.0.0 ") or line.startswith("127.0.0.1 "):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        domain = parts[1]
-                        if domain in ("0.0.0.0", "127.0.0.1", "localhost", "broadcasthost"):
-                            continue
-
-                elif line.startswith("||"):
-                    rule = line.split("$")[0]
-                    domain_part = rule[2:]
-                    domain = re.split(r"[\^/:]", domain_part)[0]
-                    if domain.startswith("*."):
-                        domain = domain[2:]
-
-                elif "." in line and " " not in line and not line.startswith("/"):
-                    domain = line
-
-                if domain:
-                    new_domains.add(domain)
-
-            with self._domains_lock:
-                self.easylist_domains = new_domains
-
-            self.write_log(f"[System] Loaded {len(new_domains)} unique ad/tracking domains into filter.")
         except Exception as e:
             self.write_log(f"[Error] Failed to load Blocklist: {e}")
 
@@ -926,6 +1047,11 @@ class FilterListBuilderApp(ctk.CTk):
             self.write_log("[Scraper] Blocklist not loaded — fetching now...")
             self.fetch_easylist(config)
 
+        scraper_root = ""
+        seed = tldextract.extract(config.scraper_url)
+        if seed.domain:
+            scraper_root = f"{seed.domain}.{seed.suffix}".lower()
+
         scraped_rows = []
         skipped = 0
 
@@ -957,7 +1083,8 @@ class FilterListBuilderApp(ctk.CTk):
                         skipped += 1
                         continue
 
-            scraped_rows.append([hostname, href])
+            party = "First-party" if base_domain == scraper_root else "Third-party"
+            scraped_rows.append([hostname, href, party])
             self.write_log(f"[Scraped] {hostname}  <--  {href}")
 
         if config.scraper_filter:
@@ -971,7 +1098,7 @@ class FilterListBuilderApp(ctk.CTk):
             try:
                 with open(filepath, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
-                    writer.writerow(["Domain", "Link"])
+                    writer.writerow(["Domain", "Link", "Party"])
                     writer.writerows(scraped_rows)
                 self.write_log(f"[Scraper] Saved {len(scraped_rows)} links to {filename}")
             except Exception as e:
@@ -1002,11 +1129,27 @@ class FilterListBuilderApp(ctk.CTk):
             for i in range(len(sub_parts)):
                 domains_to_check.add(f"{'.'.join(sub_parts[i:])}.{base_domain}")
 
+        page_url, is_top_level_nav = resolve_page_context(request)
+        page_extracted = tldextract.extract(page_url) if page_url else None
+        page_root = f"{page_extracted.domain}.{page_extracted.suffix}".lower() if page_extracted and page_extracted.domain else ""
+        is_first_party = is_top_level_nav or (base_domain == page_root)
+
         with self._domains_lock:
             is_blocked = any(d in self.easylist_domains for d in domains_to_check)
             if is_blocked:
                 newly_blocked = hostname not in self._blocked_domains
                 self._blocked_domains.add(hostname)
+            if page_root:
+                self.root_domains.add(page_root)
+
+            # Record every unique URL, blocked or not, before the early
+            # return below — this feeds the (optional) raw-URL export.
+            if config.export_raw_urls and url not in self.raw_requests:
+                self.raw_requests[url] = RequestRecord(
+                    url=url, hostname=hostname, resource_type=request.resource_type,
+                    is_blocked=is_blocked, is_first_party=is_first_party,
+                    page_url=page_url or url,
+                )
 
         if is_blocked:
             if newly_blocked and self.ui_style == "modern":
@@ -1035,8 +1178,16 @@ class FilterListBuilderApp(ctk.CTk):
         # Membership test, warning, and insert happen under a single lock
         # acquisition so the warn-once behaviour has no race window.
         with self._domains_lock:
-            if final_domain not in self.captured_domains:
-                self.captured_domains[final_domain] = request.resource_type
+            record = self.captured_domains.get(final_domain)
+            first_insert = record is None
+            if first_insert:
+                record = DomainRecord(resource_type=request.resource_type, base_domain=base_domain)
+                self.captured_domains[final_domain] = record
+            record.hit_count += 1
+            record.page_urls.add(page_url or url)
+            if is_first_party:
+                record.is_first_party = True
+            if first_insert:
                 if warning:
                     self.write_log(warning)
                 self.write_log(f"[Captured] {final_domain}  <--  ({request.resource_type})")
@@ -1044,13 +1195,181 @@ class FilterListBuilderApp(ctk.CTk):
     # ── Cleanup & save ───────────────────────────────────────────────────────
 
     def _trigger_cleanup(self, config: SessionConfig):
-        """Called from the background thread; schedules save_and_cleanup on the
-        main thread via after(). The _cleanup_called flag prevents a second
-        call if the browser was closed manually and stop_session() also fires."""
+        """Called from the background thread; schedules the review/save step
+        on the main thread via after(). The _cleanup_called flag prevents a
+        second call if the browser was closed manually and stop_session()
+        also fires."""
         if self._cleanup_called:
             return
         self._cleanup_called = True
-        self.after(0, lambda: self.save_and_cleanup(config))
+        self.after(0, lambda: self._begin_review_or_save(config))
+
+    def _begin_review_or_save(self, config: SessionConfig):
+        """Runs on the main thread once the backend thread has fully exited.
+        Snapshots the session's captured data, then either skips straight to
+        saving (nothing captured — e.g. Scraper Mode, which never populates
+        captured_domains) or opens the review dialog for the user to curate
+        the allow list before it's written."""
+        with self._domains_lock:
+            domain_snapshot = dict(self.captured_domains)
+            raw_snapshot = dict(self.raw_requests) if config.export_raw_urls else {}
+        if not domain_snapshot:
+            self.save_and_cleanup(config, {}, raw_snapshot)
+            return
+        self._open_review_dialog(config, domain_snapshot, raw_snapshot)
+
+    def _default_include_for(self, record: DomainRecord) -> bool:
+        """First-party domains default checked (opt-out). Third-party domains
+        default checked only when they show up as a recurring, cross-page
+        dependency or a heavily-requested resource on one page — the pattern
+        typical of CDNs/API hosts/auth providers. Everything else (a single
+        low-hit-count third-party domain — the classic tracker/incidental-
+        resource noise behind an over-broad allow list) starts unchecked and
+        must be opted in deliberately."""
+        if record.is_first_party:
+            return True
+        return (len(record.page_urls) >= REVIEW_DEFAULT_MIN_PAGE_COUNT
+                or record.hit_count >= REVIEW_DEFAULT_MIN_HIT_COUNT)
+
+    def _open_review_dialog(self, config: SessionConfig, domain_snapshot: dict, raw_snapshot: dict):
+        """Modal pre-export review table. Lets the user include/exclude each
+        captured domain (and optionally wildcard it) before the curated CSV
+        is written. Runs entirely on the main thread — safe to build widgets
+        here since the backend thread has already finished and exited."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Review domains before export")
+        dialog.geometry("900x600")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.attributes("-topmost", True)
+        dialog.protocol("WM_DELETE_WINDOW",
+                        lambda: self._finish_review(config, dialog, None, raw_snapshot))
+
+        self._review_include_vars = {}
+        self._review_wildcard_vars = {}
+        self._review_rows = {}
+
+        show_wildcard_col = config.export_format not in ("Deledao", "Lightspeed")
+
+        top = ctk.CTkFrame(dialog, fg_color="transparent")
+        top.pack(fill="x", padx=12, pady=(12, 4))
+        self._review_search_var = ctk.StringVar()
+        search_entry = ctk.CTkEntry(top, placeholder_text="Filter by domain...",
+                                    textvariable=self._review_search_var)
+        search_entry.pack(side="left", fill="x", expand=True)
+        self._review_search_var.trace_add("write", lambda *_: self._apply_review_filter())
+        self._review_party_filter = ctk.StringVar(value="All")
+        ctk.CTkOptionMenu(top, values=["All", "First-party", "Third-party"],
+                          variable=self._review_party_filter,
+                          command=lambda _v: self._apply_review_filter()).pack(side="right", padx=(8, 0))
+
+        header = ctk.CTkFrame(dialog, fg_color="transparent")
+        header.pack(fill="x", padx=12)
+        header_cols = ["Include", "Domain", "Type", "Hits", "Pages", "Party"] + (["Wildcard"] if show_wildcard_col else [])
+        for i, text in enumerate(header_cols):
+            ctk.CTkLabel(header, text=text, font=ctk.CTkFont(size=11, weight="bold")).grid(
+                row=0, column=i, sticky="w", padx=6)
+
+        body = ctk.CTkScrollableFrame(dialog)
+        body.pack(fill="both", expand=True, padx=12, pady=(4, 4))
+
+        ordered = sorted(domain_snapshot.items(),
+                         key=lambda kv: (not kv[1].is_first_party, -kv[1].hit_count, kv[0]))
+        for r, (domain, record) in enumerate(ordered):
+            include_var = ctk.BooleanVar(value=self._default_include_for(record))
+            self._review_include_vars[domain] = include_var
+            row_widgets = []
+
+            cb = ctk.CTkCheckBox(body, text="", variable=include_var)
+            cb.grid(row=r, column=0, padx=6, pady=2, sticky="w")
+            row_widgets.append(cb)
+
+            values = [domain, record.resource_type, str(record.hit_count),
+                     str(len(record.page_urls)), "First" if record.is_first_party else "Third"]
+            for c, val in enumerate(values, start=1):
+                lbl = ctk.CTkLabel(body, text=val)
+                lbl.grid(row=r, column=c, sticky="w", padx=6)
+                row_widgets.append(lbl)
+
+            if show_wildcard_col:
+                wc_var = ctk.BooleanVar(value=config.wildcard)
+                self._review_wildcard_vars[domain] = wc_var
+                wc_cb = ctk.CTkCheckBox(body, text="", variable=wc_var)
+                wc_cb.grid(row=r, column=len(values) + 1, padx=6, pady=2)
+                row_widgets.append(wc_cb)
+
+            self._review_rows[domain] = {"widgets": row_widgets, "is_first_party": record.is_first_party}
+
+        bottom = ctk.CTkFrame(dialog, fg_color="transparent")
+        bottom.pack(fill="x", padx=12, pady=(0, 12))
+        self._review_count_label = ctk.CTkLabel(bottom, text="")
+        self._review_count_label.pack(side="left")
+        self._refresh_review_count()
+        for var in self._review_include_vars.values():
+            var.trace_add("write", lambda *_: self._refresh_review_count())
+
+        ctk.CTkButton(bottom, text="Cancel — export nothing", fg_color="transparent",
+                     border_width=1, command=lambda: self._finish_review(
+                         config, dialog, None, raw_snapshot)).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(bottom, text="Export all as captured", fg_color="transparent",
+                     border_width=1, command=lambda: self._finish_review(
+                         config, dialog, self._collect_all_as_captured(domain_snapshot), raw_snapshot)
+                     ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(bottom, text="Export selected",
+                     command=lambda: self._finish_review(
+                         config, dialog, self._collect_reviewed_domains(domain_snapshot), raw_snapshot)
+                     ).pack(side="right")
+
+        self.write_log(f"[System] Session capture complete — reviewing {len(domain_snapshot)} domain(s) before export.")
+
+    def _apply_review_filter(self):
+        """Show/hide pre-built rows (grid/grid_remove, not destroy/rebuild)
+        so filtering stays cheap even with hundreds of captured domains."""
+        query = self._review_search_var.get().strip().lower()
+        party = self._review_party_filter.get()
+        for domain, meta in self._review_rows.items():
+            visible = query in domain.lower()
+            if party == "First-party":
+                visible = visible and meta["is_first_party"]
+            elif party == "Third-party":
+                visible = visible and not meta["is_first_party"]
+            for w in meta["widgets"]:
+                if visible:
+                    w.grid()
+                else:
+                    w.grid_remove()
+
+    def _refresh_review_count(self):
+        total = len(self._review_include_vars)
+        selected = sum(1 for v in self._review_include_vars.values() if v.get())
+        self._review_count_label.configure(text=f"{selected} of {total} domains selected")
+
+    def _collect_all_as_captured(self, domain_snapshot: dict) -> dict:
+        """'Export all as captured' escape hatch — bypasses review entirely."""
+        return {domain: record.resource_type for domain, record in domain_snapshot.items()}
+
+    def _collect_reviewed_domains(self, domain_snapshot: dict) -> dict:
+        """Converts the reviewed DomainRecord data back into the plain
+        {domain: resource_type} shape format_for_product already expects —
+        so format_for_product/save_and_cleanup's curated-write path need no
+        changes at all."""
+        final = {}
+        for domain, record in domain_snapshot.items():
+            if not self._review_include_vars[domain].get():
+                continue
+            wc_var = self._review_wildcard_vars.get(domain)
+            key = f"*.{record.base_domain}" if (wc_var is not None and wc_var.get()) else domain
+            final[key] = record.resource_type
+        return final
+
+    def _finish_review(self, config: SessionConfig, dialog, curated_domain_data, raw_snapshot: dict):
+        """Single exit path for all three review buttons and window-close.
+        curated_domain_data of None (Cancel/close) or {} (nothing selected)
+        both skip the curated write; raw export still happens independently
+        since it's an unfiltered audit dump, not the curated deliverable."""
+        dialog.grab_release()
+        dialog.destroy()
+        self.save_and_cleanup(config, curated_domain_data, raw_snapshot)
 
     def format_for_product(self, domain_data, product_type):
         formatted_rows = []
@@ -1082,18 +1401,49 @@ class FilterListBuilderApp(ctk.CTk):
 
         return headers, formatted_rows
 
-    def save_and_cleanup(self, config: SessionConfig):
-        """Runs on the main thread (scheduled via after()). Safe to touch GUI widgets."""
-        with self._domains_lock:
-            domain_snapshot = dict(self.captured_domains)
+    def format_raw_urls(self, raw_url_data: dict):
+        """Builds header + rows for the raw URL CSV. raw_url_data is keyed by
+        exact URL string, so it's already deduplicated by construction —
+        only sorting/shaping is needed here."""
+        headers = ["URL", "Domain", "Resource Type", "Blocked", "First-Party"]
+        rows = []
+        for url in sorted(raw_url_data.keys()):
+            info = raw_url_data[url]
+            rows.append([
+                info.url, info.hostname, info.resource_type,
+                "Yes" if info.is_blocked else "No",
+                "Yes" if info.is_first_party else "No",
+            ])
+        return headers, rows
 
-        if domain_snapshot and config.output_folder:
+    def _save_raw_urls_csv(self, config: SessionConfig, raw_url_data: dict, timestamp: str):
+        filename = f"raw_urls_{timestamp}.csv"
+        filepath = os.path.join(config.output_folder, filename)
+        headers, rows = self.format_raw_urls(raw_url_data)
+        try:
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+                writer.writerows(rows)
+            blocked_count = sum(1 for r in rows if r[3] == "Yes")
+            self.write_log(f"[System] Raw URL data saved: {filename} ({len(rows)} URLs, {blocked_count} blocked)")
+        except Exception as e:
+            self.write_log(f"[Error] Failed to save raw URL CSV: {e}")
+
+    def save_and_cleanup(self, config: SessionConfig, curated_domain_data, raw_url_data):
+        """Runs on the main thread (scheduled via after(), following the
+        review dialog or its skip path). curated_domain_data is the final,
+        already-reviewed {domain: resource_type} dict (or None/{} if the
+        user cancelled/deselected everything); raw_url_data is the raw
+        per-URL snapshot, written independently of curation review."""
+        timestamp = time.strftime("%d%m%y-%H%M")
+
+        if curated_domain_data and config.output_folder:
             product = config.export_format
-            timestamp = time.strftime("%d%m%y-%H%M")
             filename = f"whitelist_{product}_{timestamp}.csv"
             filepath = os.path.join(config.output_folder, filename)
 
-            headers, rows = self.format_for_product(domain_snapshot, product)
+            headers, rows = self.format_for_product(curated_domain_data, product)
 
             # Per-product row limit warnings and truncation
             if product == "Lightspeed" and len(rows) > 500:
@@ -1120,12 +1470,19 @@ class FilterListBuilderApp(ctk.CTk):
                 self.write_log(f"\n{'─' * 40}")
                 self.write_log(f"  File:     {filename}")
                 self.write_log(f"  Location: {config.output_folder}")
-                self.write_log(f"  Domains captured: {len(domain_snapshot)}")
+                self.write_log(f"  Domains exported: {len(curated_domain_data)}")
                 self.write_log(f"  Rows exported:    {len(rows)}")
                 self.write_log(f"{'─' * 40}")
 
             except Exception as e:
                 self.write_log(f"[Error] Failed to save CSV: {e}")
+        elif curated_domain_data is None:
+            self.write_log("[System] Curated export skipped — no whitelist file written.")
+
+        if config.export_raw_urls and raw_url_data and config.output_folder:
+            self._save_raw_urls_csv(config, raw_url_data, timestamp)
+        elif config.export_raw_urls and not raw_url_data:
+            self.write_log("[System] Raw export enabled but no URLs were captured — nothing to write.")
 
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")

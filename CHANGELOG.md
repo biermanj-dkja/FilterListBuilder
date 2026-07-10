@@ -2,6 +2,22 @@
 
 > **Version renumbering notice (2026-07-07):** The project previously versioned against design-document revisions (v5.x), which overstated the maturity of the code. Versions were reset one time to reflect the codebase: v5.0 → v0.2.0 and v5.1 → v0.3.0. The entries below were renumbered as part of this reset; their content is unchanged. This is a documented one-time exception to the "never edit a past entry" rule.
 
+## v0.5.0 — 2026-07-10
+
+### Added
+- **First-party / third-party domain tagging.** Every captured domain is compared against the top-level page that requested it (via Playwright's live frame state, `resolve_page_context()`) and tagged accordingly, along with a running hit-count and page-count. This directly targets the "allow list is way too broad" problem: a third-party domain seen once on one page now looks very different from the site's own first-party CDN seen across every page.
+- **Pre-export review table.** After a session (once, at the end — not per-row in Batch Mode), a review window lists every captured domain with its type, hit count, page count, and first/third-party tag, with a per-row Include checkbox (and, where applicable, a per-row Wildcard checkbox) before the curated CSV is written. First-party domains default checked; third-party domains default checked only if seen on 2+ pages or hit 5+ times, otherwise they start unchecked and must be opted in. A search box and First-party/Third-party filter help on large sessions. This closes out the "Domain review table before export" item tracked in the design doc roadmap since v0.3.0.
+- **Raw URL export (optional, toggle in Output section).** A second CSV, `raw_urls_{timestamp}.csv`, lists every unique URL requested during the session — including ones that hit the blocklist — with `Blocked` (Yes/No) and `First-Party` (Yes/No) columns. Off by default; independent of the curated review (it still writes even if the review is cancelled, since it's an audit dump, not the curated deliverable).
+- **EasyList and EasyPrivacy** added as additional default blocklist sources, unioned with StevenBlack Hosts. Each source has its own independent 4h cache file, so one source being stale or unreachable doesn't force re-fetching the others. A new shared parser (`parse_blocklist_lines()`) correctly skips `@@` exception rules and cosmetic/element-hiding rules, which real EasyList/EasyPrivacy content is full of.
+- Scraper Mode's `scraped_links_*.csv` gained a third column, `Party` (`First-party`/`Third-party`), comparing each linked domain against the scraped page's own domain.
+
+### Changed
+- **Wildcard mode now defaults OFF** (exact hostnames captured, not `*.domain.com`). This was the single biggest contributor to overly broad allow lists — one captured subdomain no longer silently allow-lists every subdomain of that registrable domain. Still available as an opt-in toggle, including per-domain in the new review table.
+- `save_and_cleanup()` no longer writes directly from `captured_domains`; it now takes the final, reviewed domain data (and the raw URL data) as explicit arguments from the new review step.
+- **Breaking:** Scraper Mode's `scraped_links_*.csv` header changed from `Domain,Link` to `Domain,Link,Party`.
+
+---
+
 ## v0.4.1 — 2026-07-07
 
 ### Changed
