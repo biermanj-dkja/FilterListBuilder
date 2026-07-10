@@ -55,6 +55,10 @@ blocklist_cache.txt
 whitelist_*.csv
 scraped_links_*.csv
 
+# Standalone build (see BUILD-INSTRUCTIONS.md) — build/ and dist/ are
+# covered above; pw-browsers/ is the local Chromium copy fetched by build.py
+pw-browsers/
+
 # Credentials — never commit these
 credentials.csv
 *.secret
